@@ -1,0 +1,77 @@
+name: Build APK
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - name: Pliki projektu (generowane automatycznie)
+        run: |
+          cat > package.json << 'EOF'
+          {
+            "name": "rikipo-run",
+            "version": "1.0.0",
+            "private": true,
+            "dependencies": {
+              "@capacitor/android": "^6.2.0",
+              "@capacitor/core": "^6.2.0",
+              "@capacitor-community/background-geolocation": "^1.2.20",
+              "@capacitor-community/bluetooth-le": "^6.1.0"
+            },
+            "devDependencies": {
+              "@capacitor/cli": "^6.2.0",
+              "esbuild": "^0.24.0"
+            }
+          }
+          EOF
+          cat > capacitor.config.json << 'EOF'
+          {
+            "appId": "de.rikipo.run",
+            "appName": "Rikipo Run",
+            "webDir": "www",
+            "server": { "androidScheme": "https" }
+          }
+          EOF
+          cat > bridge-src.js << 'EOF'
+          import { registerPlugin, Capacitor } from '@capacitor/core';
+          import { BleClient, numberToUUID } from '@capacitor-community/bluetooth-le';
+          const BackgroundGeolocation = registerPlugin('BackgroundGeolocation');
+          window.RikipoNative = {
+            Capacitor,
+            BleClient,
+            BackgroundGeolocation,
+            HR: { service: numberToUUID(0x180d), char: numberToUUID(0x2a37) },
+          };
+          EOF
+      - name: Aplikacja do www/
+        run: |
+          if ! ls *.html >/dev/null 2>&1; then echo "BLAD: wgraj plik .html aplikacji do repozytorium"; exit 1; fi
+          mkdir -p www
+          f=$(ls *.html | head -n 1)
+          cp "$f" www/index.html
+          echo "Uzyto pliku: $f"
+      - name: Zaleznosci
+        run: npm install --no-audit --no-fund --legacy-peer-deps
+      - name: Mostek natywny
+        run: npx esbuild bridge-src.js --bundle --format=iife --outfile=www/bridge.js
+      - name: Projekt Android
+        run: npx cap add android
+      - name: Uprawnienia AndroidManifest
+        run: |
+          M=android/app/src/main/AndroidManifest.xml
+          perl -0pi -e 's|<application|<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>\n    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>\n    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION"/>\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation"/>\n    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>\n    <uses-permission android:name="android.permission.BLUETOOTH"/>\n    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"/>\n    <application|' $M
+      - name: Synchronizacja
+        run: npx cap sync android
+      - name: Budowanie APK
+        run: cd android && chmod +x gradlew && ./gradlew assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rikipo-run-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
